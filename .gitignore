@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+data/
+runs/
+checkpoints/
+*.bin
+*.idx
+*.pt
+*.log

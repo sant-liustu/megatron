@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/NVIDIA/Megatron-LM",
+  "commit": "cd4afffa648426a959dc7cb1e24b5ce7d0c3ff54",
+  "script_sha256": {
+    "launch.py": "c1336e2bd56cae3cbf442a3b2c1202ea443c3c1323b4dff905580e24a30d105b",
+    "prepare_data.py": "24d4c33a68d217577f8c6a5997050ff76950a8843bd341c19803cc98f410ac1c",
+    "train_w768.sh": "8dee47d6978ea877948ab292ac953839865964677dbeda74874ec8de31a54e90"
+  }
+}
