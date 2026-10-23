@@ -5,5 +5,11 @@
     "launch.py": "c1336e2bd56cae3cbf442a3b2c1202ea443c3c1323b4dff905580e24a30d105b",
     "prepare_data.py": "24d4c33a68d217577f8c6a5997050ff76950a8843bd341c19803cc98f410ac1c",
     "train_w768.sh": "8dee47d6978ea877948ab292ac953839865964677dbeda74874ec8de31a54e90"
+  },
+  "muon_files_sha256": {
+    "examples/nanogpt_adamw/launch_muon.py": "4d51f0d55143df8a1cc974303eee41687a56b2ab3f881cc8de584f27e207aef9",
+    "examples/nanogpt_adamw/train_w768_muon.sh": "05c38b10596c962ddf4b8f66d5a11000d8c9edc6dfa0d9c8c44922806ba6923c",
+    "examples/nanogpt_adamw/MUON.md": "306ac0704fc73a6587a40bc551291046f150125abb9ae2b04b3c5b67a649fe8e",
+    "patches/muon-gamma.patch": "4e3608d6fdec76464c48fa5c70674bbaf34f725d657e1f7a63bac3e69996925c"
   }
 }

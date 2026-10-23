@@ -1,0 +1,26 @@
+diff --git a/megatron/training/training.py b/megatron/training/training.py
+index 66e9bfed9..9cabffbf5 100644
+--- a/megatron/training/training.py
++++ b/megatron/training/training.py
+@@ -81,6 +81,7 @@ from megatron.core.optimizer.layer_wise_optimizer import (
+     tag_params_for_buffer_routing,
+ )
+ from megatron.core.optimizer.optimizer import param_group_identifier_keys
++from megatron.core.optimizer.optimizer_config import ParamPredicate
+ from megatron.core.optimizer.optimizer_cuda_graph import OptimizerCudaGraphWrapper
+ from megatron.core.optimizer.qk_clip import clip_qk
+ from megatron.core.optimizer_param_scheduler import (
+@@ -1956,6 +1957,13 @@ def get_megatron_optimizer_config(args: Any) -> OptimizerConfig:
+     #  can be added to as needed by the user, or replaced entirely with a custom override.
+     config_overrides = get_standard_config_overrides(config=config)
+ 
++    # Local w768 Muon recipe: keep Norm gamma on its original AdamW LR.
++    # In this bias-free model, the one-dimensional parameters are Norm gamma.
++    if args.optimizer == "muon":
++        config_overrides[ParamKey(predicate=ParamPredicate(
++            name="w768_muon_gamma", fn=lambda param: param.ndim == 1
++        ))] = {"max_lr": 0.0018, "min_lr": 0.0, "wd_mult": 0.0}
++
+     return config, config_overrides
+ 
+ def get_megatron_ddp_config(args: argparse.Namespace) -> DistributedDataParallelConfig:

@@ -1,4 +1,4 @@
-# Megatron w768 AdamW
+# Megatron w768 AdamW / Muon
 
 本仓库存放在 NVIDIA Megatron-LM 上运行 w768 AdamW 实验的正式训练与数据转换脚本。训练循环、模型构建、优化器和 checkpoint 使用 Megatron 官方实现。
 
@@ -78,3 +78,21 @@ RMSNorm含Q/K可学习gamma，epsilon=1e-5；squared ReLU、默认RoPE、无bias
 当前正式8卡w768/TE/BF16、每卡batch64和多节点尚未实测；此前小模型结果不代表正式配置的显存、吞吐或稳定性。Megatron默认打乱样本，与旧nanoGPT顺序loader不保证逐batch一致。官方WSD初始更新LR0，与旧预热首步存在差异。仅一个1亿token训练分片跑满此配置会重复约26.7轮，正式比较需相同数据清单与token预算。
 
 output保存argv、数据清单、Git状态/diff、源码副本、日志和官方torch checkpoint；数据、模型权重、运行日志和本地历史记录不包含在本仓库中。
+
+## Muon 版本
+
+保留原 AdamW 入口。Muon 配方见 [MUON.md](examples/nanogpt_adamw/MUON.md)。除复制 examples 外，必须将 gamma 分组规则补丁应用到上述固定版本的 Megatron：
+
+```bash
+# 在 /workspace/Megatron-LM 中执行；只应用一次
+ git apply --check ../megatron/patches/muon-gamma.patch
+ git apply ../megatron/patches/muon-gamma.patch
+ python -m pip install 'emerging_optimizers @ git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.2.0'
+ bash examples/nanogpt_adamw/train_w768_muon.sh \
+   --data-dir /workspace/data/fineweb10B/megatron \
+   --output /workspace/runs/w768_muon
+```
+
+补丁仅修改 training.py：Muon 模式下的一维参数 LR=0.0018、WD=0；当前无 bias 模型中对应 Norm gamma。默认矩阵 Muon LR=0.00036、WD=0.1，embedding/output AdamW LR=0.0036、WD=0.1。此定制影响该 checkout 的所有 Muon 实验。启动器直接调用官方 pretrain_gpt.py，无包装入口。
+
+本地单 GPU FP32 小模型真实数据5步、验证、保存及断点恢复已通过；尚未验证云端8卡w768 BF16 Muon。不能将该检查视为旧 nanoGPT 的逐位复现。
