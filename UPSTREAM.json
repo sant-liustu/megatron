@@ -7,9 +7,14 @@
     "train_w768.sh": "8dee47d6978ea877948ab292ac953839865964677dbeda74874ec8de31a54e90"
   },
   "muon_files_sha256": {
-    "examples/nanogpt_adamw/launch_muon.py": "4d51f0d55143df8a1cc974303eee41687a56b2ab3f881cc8de584f27e207aef9",
+    "examples/nanogpt_adamw/launch_muon.py": "64e486da77dd521d23fcbb3d9fdf7724cdd889bb6bb702ae1772bd3d775869d0",
     "examples/nanogpt_adamw/train_w768_muon.sh": "05c38b10596c962ddf4b8f66d5a11000d8c9edc6dfa0d9c8c44922806ba6923c",
-    "examples/nanogpt_adamw/MUON.md": "306ac0704fc73a6587a40bc551291046f150125abb9ae2b04b3c5b67a649fe8e",
-    "patches/muon-gamma.patch": "4e3608d6fdec76464c48fa5c70674bbaf34f725d657e1f7a63bac3e69996925c"
-  }
+    "examples/nanogpt_adamw/MUON.md": "fdc3a5d296b6380b633b3b8589c3c81f64c64d71e7708a6c157d3e34e8f2309d",
+    "patches/muon-gamma.patch": "4e3608d6fdec76464c48fa5c70674bbaf34f725d657e1f7a63bac3e69996925c",
+    "patches/muon-fixed-rms.patch": "6eee16b0d8bccc7b78c7fb1922c8f8a3597daf61b5e3db40229be17be81be191"
+  },
+  "patch_order": [
+    "patches/muon-gamma.patch",
+    "patches/muon-fixed-rms.patch"
+  ]
 }

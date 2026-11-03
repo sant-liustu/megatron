@@ -87,6 +87,8 @@ output保存argv、数据清单、Git状态/diff、源码副本、日志和官�
 # 在 /workspace/Megatron-LM 中执行；只应用一次
  git apply --check ../megatron/patches/muon-gamma.patch
  git apply ../megatron/patches/muon-gamma.patch
+ git apply --check ../megatron/patches/muon-fixed-rms.patch
+ git apply ../megatron/patches/muon-fixed-rms.patch
  python -m pip install 'emerging_optimizers @ git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.2.0'
  bash examples/nanogpt_adamw/train_w768_muon.sh \
    --data-dir /workspace/data/fineweb10B/megatron \
@@ -96,3 +98,24 @@ output保存argv、数据清单、Git状态/diff、源码副本、日志和官�
 补丁仅修改 training.py：Muon 模式下的一维参数 LR=0.0018、WD=0；当前无 bias 模型中对应 Norm gamma。默认矩阵 Muon LR=0.00036、WD=0.1，embedding/output AdamW LR=0.0036、WD=0.1。此定制影响该 checkout 的所有 Muon 实验。启动器直接调用官方 pretrain_gpt.py，无包装入口。
 
 本地单 GPU FP32 小模型真实数据5步、验证、保存及断点恢复已通过；尚未验证云端8卡w768 BF16 Muon。不能将该检查视为旧 nanoGPT 的逐位复现。
+
+## 固定范数版本
+
+新环境按上节依次应用两个补丁。**已经应用过 muon-gamma.patch 的环境，不要重复应用它**：更新脚本仓库、重新复制 examples 目录后，只应用新增补丁：
+
+```bash
+# 在 /workspace/Megatron-LM 目录
+cp -R ../megatron/examples/nanogpt_adamw examples/
+git apply --check ../megatron/patches/muon-fixed-rms.patch
+git apply ../megatron/patches/muon-fixed-rms.patch
+bash examples/nanogpt_adamw/train_w768_muon.sh \
+  --data-dir /workspace/data/fineweb10B/megatron \
+  --output /workspace/runs/w768_muon_fixed_rms \
+  --fixed-matrix-rms
+```
+
+新增补丁修改参数解析、training.py安装入口，并新增fixed_rms.py；不改Muon算法。开关开启时所有矩阵WD=0，保持原学习率/WSD；主干矩阵和共享embedding固定到各自初始RMS，Q/K/V分别处理，gamma不投影。不加开关仍为原Muon WD=0.1版本。使用新的output，不从普通Muon checkpoint续训。
+
+默认8卡、TP=PP=CP=1、纯数据并行，global batch512、5100步。支持普通DP与均匀连续TP分片；不支持PP、MoE、分布式优化器/FSDP、GTP分片。详细边界见MUON.md。
+
+验证：BF16小模型TP1及TP2完整功能模拟、每步13个逻辑矩阵范数、主权重到BF16模型复制、连续5步与2+3恢复均通过。TP2由两个进程共用单GPU、CPU/Gloo中转通信，最大相对RMS误差9.64e-8；这不代表真实双卡NCCL、Transformer Engine、多机或性能验证通过。正式脚本不含测试适配代码。

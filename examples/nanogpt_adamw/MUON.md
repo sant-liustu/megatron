@@ -34,3 +34,18 @@ bash examples/nanogpt_adamw/train_w768_muon.sh \
 2026-10-16：Windows 单 GPU、local 实现、FP32、2层/width128/seq32/global4，真实 FineWeb 数据运行5步、验证、保存成功。连续5步和2步后恢复至5步，模型、优化器和调度器状态逐项完全一致。checkpoint 中三类参数的实际优化器、峰值学习率、WD与上表一致。
 
 本次没有执行云端8卡、w768、Transformer Engine/BF16训练。官方实现使用 FP32 归一化、EMA 形式动量和 BF16 NS 运算；与旧脚本的计算顺序及 epsilon 处理有差异，因此这里对齐配方，不宣称旧脚本逐位数值等价。
+
+## 可选固定矩阵 RMS（2026-11-03）
+
+在原启动命令追加 `--fixed-matrix-rms`，使用新 output。此开关将 WD 设为0；学习率、WSD、Muon NS配方不变，不做ELR控制。不加开关仍为原WD=0.1版本。
+
+主干矩阵与共享embedding在每次底层优化器成功step后投影到各自初始RMS，Q/K/V按逻辑矩阵分别处理，一维gamma不参与。通过正式step post hook在FP32主权重上操作，然后沿用Megatron的主权重到BF16模型同步。目标保存在optimizer param_groups中，恢复时验证布局并加载原目标，不能用普通Muon checkpoint直接恢复。
+
+支持范围：当前dense Muon、普通DP、均匀连续TP分片、PP=CP=1、非分布式优化器、torch checkpoint；不支持PP共享权重、MoE、FSDP/分布式优化器、GTP重分片或strided TP。TP组来自框架；仅归约矩阵平方和和元素数，不收集完整矩阵。固定范数不会改变Muon的tp_mode；以后使用TP>1时仍需明确选择Muon算法模式。
+
+本地验证：4个CPU/Gloo进程模拟TP2×两组独立副本，行/列分片与融合QKV投影对照完整矩阵通过，恢复一致；这是投影通信验证，不是完整多卡模型训练。真实FineWeb单GPU local实现FP32/BF16小模型5步通过；FP32 2+3恢复与连续5步模型/优化器/调度器完全一致，BF16主权重13个逻辑矩阵最大相对RMS误差约7.42e-8。未验证多机NCCL、TE、完整TP训练或吞吐。
+
+实现见 `megatron/core/optimizer/fixed_rms.py`，安装入口在training.py。部署需先应用 muon-gamma.patch，再应用 muon-fixed-rms.patch，具体命令见仓库根README。已应用gamma补丁的环境只需追加fixed-rms补丁；不能只复制启动脚本。
+
+### 完整链路模拟补充验证
+2026-11-03：同一CUDA GPU上的双进程运行完整TP2小模型（DP1、PP1、BF16、local实现、Muon distributed模式），集合通信由测试适配器经CPU/Gloo同步中转。真实数据5步与2+3恢复通过；每步13个逻辑矩阵全局RMS独立重建检查通过，最大相对误差9.642e-8。每步FP32主权重到BF16模型复制精确核对通过；各rank模型/优化器/调度器恢复结果逐位一致。TP1 BF16同样通过。这是功能模拟，不是双物理GPU、NCCL、TE或性能验证；正式代码未加入测试适配器。

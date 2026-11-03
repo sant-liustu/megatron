@@ -1,0 +1,146 @@
+--- a/megatron/training/training.py
++++ b/megatron/training/training.py
+@@ -2128,6 +2128,19 @@
+             use_gloo_process_groups=args.use_gloo_process_groups,
+             dump_param_to_param_group_map=args.dump_param_to_param_group_map,
+         )
++        if getattr(args, "fixed_matrix_rms", False):
++            from megatron.core.optimizer.fixed_rms import install_fixed_rms
++
++            if (args.pipeline_model_parallel_size != 1 or args.context_parallel_size != 1
++                    or args.use_distributed_optimizer or getattr(args, 'num_experts', None)
++                    or getattr(args, 'use_layer_wise_distributed_optimizer', False)
++                    or args.ckpt_format != 'torch' or args.weight_decay != 0
++                    or args.optimizer != 'muon'):
++                raise ValueError('Fixed RMS requires dense Muon, PP=CP=1, replicated optimizer, torch checkpoint and WD=0')
++            groups = pg_collection or ProcessGroupCollection.use_mpu_process_groups()
++            if getattr(groups, 'gtp_remat', None) is not None and torch.distributed.get_world_size(groups.gtp_remat) > 1:
++                raise ValueError('Fixed RMS does not support GTP rematerialization sharding')
++            optimizer.fixed_rms_controllers = install_fixed_rms(optimizer, groups.tp)
+         opt_param_scheduler = get_optimizer_param_scheduler(optimizer)
+ 
+     one_logger and one_logger.log_metrics({"app_build_optimzer_finish_time": one_logger_utils.get_timestamp_in_ms()})
+--- a/megatron/training/arguments.py
++++ b/megatron/training/arguments.py
+@@ -2522,6 +2522,7 @@
+                        'Validated at optimizer creation time.')
+     group.add_argument('--muon-num-ns-steps', type=int, default=5,
+                        help='Number of Newton-Schulz steps for Muon optimizer')
++    group.add_argument('--fixed-matrix-rms', action='store_true', help='Fix matrix RMS to initialization.')
+     group.add_argument('--muon-tp-mode', type=str, default='blockwise',
+                        choices=['blockwise', 'duplicated', 'distributed'],
+                        help='How to perform NS calculation for tensor model parallel weights')
+--- /dev/null
++++ b/megatron/core/optimizer/fixed_rms.py
+@@ -0,0 +1,111 @@
++"""Fixed logical-matrix RMS for replicated optimizers with optional uniform TP.
++
++Targets live in optimizer parameter groups, so ordinary torch checkpoints retain them.
++This module does not implement optimizer-state sharding or pipeline tied weights.
++"""
++import torch
++import torch.distributed as dist
++
++
++class FixedRMS:
++    def __init__(self, optimizer, tp_group=None):
++        self.optimizer = optimizer
++        self.tp_group = tp_group
++        self.world = dist.get_world_size(tp_group) if tp_group is not None else 1
++        self.entries = []
++        for group in optimizer.param_groups:
++            group['fixed_rms_targets'] = []
++            group['fixed_rms_layout'] = []
++            for p in group['params']:
++                if p.ndim != 2:
++                    continue
++                if group.get('weight_decay', 0) != 0:
++                    raise ValueError('Fixed RMS requires zero matrix weight decay')
++                dim = getattr(p, 'partition_dim', None)
++                if not getattr(p, 'tensor_model_parallel', False):
++                    dim = None
++                if dim is not None and getattr(p, 'partition_stride', 1) != 1:
++                    raise ValueError('Fixed RMS does not support strided TP partitions')
++                if dim not in (None, 0, 1):
++                    raise ValueError('Unsupported TP partition dimension')
++                shapes = getattr(p, 'qkv_split_shapes', None) if getattr(p, 'is_qkv', False) else None
++                if shapes and (len(shapes) != 3 or dim not in (None, 0)):
++                    raise ValueError('Only standard QKV output partitioning is supported')
++                if shapes and p.shape[0] % sum(shapes):
++                    raise ValueError('Invalid local QKV layout')
++                if p.dtype != torch.float32:
++                    raise ValueError('Fixed RMS must operate on FP32 master weights')
++                layout = (tuple(p.shape), dim, tuple(shapes) if shapes else None)
++                group['fixed_rms_layout'].append(layout)
++                self.entries.append((group, p, dim, shapes, len(group['fixed_rms_targets'])))
++                group['fixed_rms_targets'].append(None)
++        # Catch incompatible layouts/order before tensor collectives (identical-shape
++        # semantic swaps still require the caller to preserve model parameter order).
++        if self.world > 1:
++            layouts = [g['fixed_rms_layout'] for g in optimizer.param_groups]
++            gathered = [None] * self.world
++            dist.all_gather_object(gathered, layouts, group=tp_group)
++            if any(x != layouts for x in gathered):
++                raise ValueError('TP fixed-RMS parameter layouts/order differ')
++        with torch.no_grad():
++            for group, p, dim, shapes, index in self.entries:
++                group['fixed_rms_targets'][index] = [self.rms(x, dim).item() for x in self.parts(p, shapes)]
++        optimizer.register_step_post_hook(self.after_step)
++        optimizer.register_load_state_dict_pre_hook(self.before_load)
++        optimizer.register_load_state_dict_post_hook(self.after_load)
++
++    @staticmethod
++    def parts(p, shapes):
++        if shapes is None:
++            return [p]
++        return list(p.view(-1, sum(shapes), p.shape[-1]).split(shapes, dim=1))
++
++    def rms(self, x, dim):
++        stats = torch.stack((x.double().square().sum(), x.new_tensor(x.numel(), dtype=torch.float64)))
++        if self.world > 1 and dim is not None:
++            dist.all_reduce(stats, group=self.tp_group)
++        value = (stats[0] / stats[1]).sqrt()
++        if not torch.isfinite(value) or value <= 0:
++            raise ValueError('Fixed RMS encountered zero or nonfinite matrix RMS')
++        return value.float()
++
++    @torch.no_grad()
++    def after_step(self, optimizer, args, kwargs):
++        for group, p, dim, shapes, index in self.entries:
++            for x, target in zip(self.parts(p, shapes), group['fixed_rms_targets'][index]):
++                x.mul_(target / self.rms(x, dim))
++
++    def before_load(self, optimizer, state_dict):
++        if len(state_dict['param_groups']) != len(optimizer.param_groups):
++            raise ValueError('Fixed RMS checkpoint group mismatch')
++        for current, saved in zip(optimizer.param_groups, state_dict['param_groups']):
++            if saved.get('fixed_rms_layout') != current['fixed_rms_layout']:
++                raise ValueError('Missing or incompatible fixed RMS checkpoint layout')
++            targets = saved.get('fixed_rms_targets')
++            if targets is None or [len(x) for x in targets] != [len(x) for x in current['fixed_rms_targets']]:
++                raise ValueError('Missing or incompatible fixed RMS targets')
++            if any(not torch.isfinite(torch.tensor(t)) or t <= 0 for xs in targets for t in xs):
++                raise ValueError('Invalid checkpoint RMS target')
++        return state_dict
++
++    def after_load(self, optimizer):
++        # Optimizer.load_state_dict replaces group dictionaries; refresh references.
++        old_groups = []
++        for entry in self.entries:
++            if not old_groups or entry[0] is not old_groups[-1]:
++                old_groups.append(entry[0])
++        mapping = {}
++        for new in optimizer.param_groups:
++            for old in old_groups:
++                if len(old['params']) == len(new['params']) and all(a is b for a, b in zip(old['params'], new['params'])):
++                    mapping[id(old)] = new
++        self.entries = [(mapping[id(g)], p, d, s, i) for g, p, d, s, i in self.entries]
++
++
++def install_fixed_rms(optimizer, tp_group=None):
++    """Install after master weights exist, before checkpoint restore."""
++    if hasattr(optimizer, 'chained_optimizers'):
++        return [install_fixed_rms(child, tp_group) for child in optimizer.chained_optimizers]
++    if type(optimizer).__name__ not in ('FP32Optimizer', 'Float16OptimizerWithFloat16Params'):
++        raise ValueError('Fixed RMS supports only replicated FP32/FP16 optimizer wrappers')
++    return FixedRMS(optimizer.optimizer, tp_group)

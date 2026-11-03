@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--micro-batch-size', type=int, default=64, help='Sequences per GPU per microbatch')
     parser.add_argument('--transformer-impl', choices=('local', 'transformer_engine'), default='transformer_engine')
     parser.add_argument('--data-dir', type=Path, required=True, help='Directory produced by prepare_data.py')
+    parser.add_argument('--fixed-matrix-rms', action='store_true', help='Fix matrix RMS; disables weight decay')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--exit-interval', type=int, help='Save and stop after this many iterations')
     parser.add_argument('--dry-run', action='store_true')
@@ -63,7 +64,7 @@ def main():
         '--train-iters', str(steps), '--optimizer', 'muon', '--lr', '0.00036',
         '--decoupled-lr', '0.0036', '--min-lr', '0', '--decoupled-min-lr', '0',
         '--adam-beta1', '0.9', '--adam-beta2', '0.95', '--adam-eps', '1e-8',
-        '--weight-decay', '0.1', '--clip-grad', '0',
+        '--weight-decay', '0' if args.fixed_matrix_rms else '0.1', '--clip-grad', '0',
         '--muon-momentum', '0.95', '--muon-nesterov',
         '--muon-num-ns-steps', '5', '--muon-coefficient-type', 'simple',
         '--muon-scale-mode', 'spectral', '--muon-extra-scale-factor', '1.0',
@@ -84,6 +85,8 @@ def main():
     train_args += ['--train-data-path', str(args.data_dir / 'train'),
                    '--valid-data-path', str(args.data_dir / 'valid'),
                    '--null-tokenizer-eod-id', '50256', '--bf16']
+    if args.fixed_matrix_rms:
+        train_args += ['--fixed-matrix-rms']
     if args.exit_interval is not None:
         if args.exit_interval < 1:
             parser.error('--exit-interval must be positive')
@@ -94,7 +97,7 @@ def main():
             parser.error('Muon resume requires the original launch manifest')
         if original.is_file():
             previous = json.loads(original.read_text(encoding='utf-8'))
-            if previous.get('recipe') != 'w768_muon':
+            if previous.get('recipe') != ('w768_muon_fixed_rms' if args.fixed_matrix_rms else 'w768_muon'):
                 parser.error('Cannot resume a non-Muon run with the Muon launcher')
             if previous.get('data_manifest') != data_manifest:
                 parser.error('Resume dataset differs from the original launch')
@@ -122,12 +125,13 @@ def main():
     source_dir.mkdir(exist_ok=True)
     hashes = {}
     for source in (Path(__file__), ROOT / 'megatron/training/training.py',
+                   ROOT / 'megatron/core/optimizer/fixed_rms.py',
                    Path(__file__).with_name('prepare_data.py')):
         content = source.read_bytes()
         hashes[source.name] = hashlib.sha256(content).hexdigest()
         (source_dir / source.name).write_bytes(content)
     (out / f'{label}.json').write_text(json.dumps({
-        'argv': cmd, 'recipe': 'w768_muon', 'data': str(args.data_dir),
+        'argv': cmd, 'recipe': 'w768_muon_fixed_rms' if args.fixed_matrix_rms else 'w768_muon', 'data': str(args.data_dir),
         'data_manifest': data_manifest,
         'python': sys.version, 'platform': platform.platform(), 'source_sha256': hashes,
         'git_head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
